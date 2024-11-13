@@ -1,0 +1,6 @@
+wandb/
+wandb/*
+__pycache__/
+thesis/wandb/
+thesis/david/
+thesis/myusername
