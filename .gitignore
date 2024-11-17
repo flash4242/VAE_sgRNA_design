@@ -1,4 +1,6 @@
 wandb/
+runs/
+david/
 wandb/*
 __pycache__/
 thesis/wandb/

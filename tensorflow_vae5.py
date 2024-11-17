@@ -203,6 +203,7 @@ vae = VAEWithLoss(
     num_samples=config.num_samples_in_vae
 )
 print(vae.summary())
+'''
 # Compile the model
 optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
 vae.compile(optimizer=optimizer)
@@ -292,4 +293,4 @@ sgrna_efficacy_pairs = ont_eval(new_sgRNAs)
 with open('sgRNA_efficacies_pairs5.txt', 'w') as file:
     for pair in sgrna_efficacy_pairs:
         file.write(f"{pair['sgRNA']}:{pair['efficacy']}\n")
-
+'''
