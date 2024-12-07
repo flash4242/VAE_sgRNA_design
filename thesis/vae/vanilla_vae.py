@@ -6,6 +6,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 import wandb
 import pandas as pd
+import numpy as np
+from model import BaselineConvModel  # Import the model class
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Initialize Weights & Biases
@@ -25,6 +28,31 @@ wandb.init(
     },
 )
 config = wandb.config
+
+
+# -----------------  ON-TARGET MODEL HELPER FUNCTIONS --------------------
+# Modify the VAE Loss Function
+def on_target_loss(predicted_efficacy):
+    ground_truth = 1.0  # Assuming the ground truth efficacy is 1
+    return (predicted_efficacy - ground_truth) ** 2
+
+def load_ont_model(model_path="hl60/best_ont_hl60_model.pth"):
+    model = BaselineConvModel().to(device)
+    model.load_state_dict(torch.load(model_path))
+    model.eval()
+    return model
+
+def predict_sgRNA_eff(model, sgRNA_seq):
+    base_map = {'A': 0, 'C': 1, 'T': 2, 'G': 3}
+    encoded_seq = np.zeros((4, len(sgRNA_seq)), dtype=np.float32)
+    for i, base in enumerate(sgRNA_seq):
+        if base in base_map:
+            encoded_seq[base_map[base], i] = 1.0
+    input_tensor = torch.tensor(encoded_seq).unsqueeze(0).to(device)
+    with torch.no_grad():
+        output = model(input_tensor)
+    return output.item()
+# -----------------  ON-TARGET MODEL HELPER FUNCTIONS - END --------------------
 
 # Define dataset for sgRNAs
 class sgRNADataset(Dataset):
@@ -101,7 +129,7 @@ def vae_loss(reconstructed, target, z_mean, z_log_var):
 
 
 # Load and preprocess data
-data = pd.read_csv("sgrna_hela_vae.csv")
+data = pd.read_csv("hl60/data_for_vae_hl60.csv")
 sgRNAs = data["sgRNA"].values
 nucleotides = ["A", "C", "G", "T"]
 char_to_int = {nucleotide: i for i, nucleotide in enumerate(nucleotides)}
@@ -125,10 +153,18 @@ model = VAE(
     max_length=max_length,
 ).to(device)
 
-optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate)
 
 # Training Loop
 best_val_loss = float("inf")
+
+# Load the frozen on-target model
+ontarget_model = load_ont_model()  # Ensure this is the pre-trained on-target prediction model
+ontarget_model.eval()
+
+# Initialize variables to log losses
+train_losses, val_losses = [], []
+
 for epoch in range(config.epochs):
     model.train()
     train_loss = 0.0
@@ -153,17 +189,56 @@ for epoch in range(config.epochs):
             val_loss += loss.item()
 
     val_loss /= len(val_loader.dataset)
+
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
     wandb.log({"epoch": epoch + 1, "train_loss": train_loss, "val_loss": val_loss})
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
-        torch.save(model.state_dict(), "best_vae.pth")
+        torch.save(model.state_dict(), "hl60/best_vanilla_hl60_vae.pth")
         wandb.run.summary["best_val_loss"] = best_val_loss
 
-    print(f"Epoch {epoch + 1}/{config.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+    #print(f"Epoch {epoch + 1}/{config.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+
+
+# Save all losses to a CSV file
+losses_df = pd.DataFrame({
+    "epoch": list(range(1, config.epochs + 1)),
+    "train_loss": train_losses,
+    "val_loss": val_losses
+})
+losses_df.to_csv("hl60/vanilla_hl60_vae_losses.csv", index=False)
+#print("All losses saved to 'vanilla_vae_losses.csv'.")
 
 # Load the best model
-model.load_state_dict(torch.load("best_vae.pth"))
+model.load_state_dict(torch.load("hl60/best_vanilla_hl60_vae.pth"))
 model.eval()
+
+# Testing: Generate 1000 sgRNAs and save on-target efficacies
+generated_sgRNAs = []
+predicted_efficacies = []
+
+with torch.no_grad():
+    for _ in range(200):  # 200 batches of size 5 to generate 1000 sgRNAs
+        z = torch.randn(5, config.latent_dim).to(device)
+        generated_outputs = model.decode(z)
+        generated_indices = torch.argmax(generated_outputs, dim=-1)
+
+        # Convert generated indices to sgRNA sequences
+        for sequence in generated_indices:
+            sgRNA = "".join(int_to_char[idx.item()] for idx in sequence)
+            generated_sgRNAs.append(sgRNA)
+            efficacy = predict_sgRNA_eff(ontarget_model, sgRNA)
+            predicted_efficacies.append(efficacy)
+
+# Save results to a CSV file
+import pandas as pd
+
+results_df = pd.DataFrame(predicted_efficacies)
+results_df.to_csv("hl60/vanilla_hl60_vae_results.csv", index=False)
+
+#print("Generated 1000 sgRNAs and saved results to 'vanilla_vae_results.csv'.")
+
 
 wandb.finish()
